@@ -27,9 +27,9 @@ type node struct {
 	nodeInfoWaitGroup sync.WaitGroup
 	nodeInfoVisited   struct {
 		Meta struct {
-			GeneratedAt     int
-			NodesSuccessful uint8
-			NodesFailed     uint8
+			GeneratedAtUTC  int64
+			NodesSuccessful int
+			NodesFailed     int
 		} `json:"meta"`
 		NodeInfo map[string]interface{} `json:"nodeinfo"`
 	}
@@ -43,13 +43,12 @@ type attempt struct {
 
 func main() {
 	n := node{
-		config:     config.GenerateConfig(),
-		log:        log.New(os.Stdout, "", log.Flags()),
-		dhtVisited: make(map[crypto.BoxPubKey]attempt),
-		nodeInfoVisited: nodeinfos{
-			NodeInfo: make(map[string]interface{}),
-		},
+		config: config.GenerateConfig(),
+		log:    log.New(os.Stdout, "", log.Flags()),
 	}
+
+	n.dhtVisited = make(map[crypto.BoxPubKey]attempt)
+	n.nodeInfoVisited.NodeInfo = make(map[string]interface{})
 
 	n.config.NodeInfo = map[string]interface{}{
 		"name": "Yggdrasil Crawler",
@@ -62,8 +61,6 @@ func main() {
 
 	n.core.Start(n.config, n.log)
 	n.core.AddPeer("tcp://edinburgh.psg.neilalexander.dev:54321", "")
-
-	fmt.Println("Our public key is", n.core.EncryptionPublicKey())
 
 	fmt.Println("Waiting for DHT bootstrap")
 	for {
@@ -103,24 +100,22 @@ func main() {
 		}
 	}
 
-	n.nodeInfoVisited.Meta.GeneratedAt = time.Now()
+	n.nodeInfoVisited.Meta.GeneratedAtUTC = time.Now().UTC().Unix()
 	n.nodeInfoVisited.Meta.NodesSuccessful = len(n.nodeInfoVisited.NodeInfo)
 	n.nodeInfoVisited.Meta.NodesFailed = found - len(n.nodeInfoVisited.NodeInfo)
-
-	fmt.Println()
-	fmt.Println(attempted, "nodes were processed")
-	fmt.Println(found, "nodes were found")
-	fmt.Println(attempted-found, "nodes were not found")
-	fmt.Println()
-	fmt.Println(n.nodeInfoVisited.Meta.NodesSuccessful, "nodes responded with nodeinfo")
-	fmt.Println(n.nodeInfoVisited.Meta.NodesFailed, "nodes did not respond with nodeinfo")
-	fmt.Println()
 
 	if j, err := json.Marshal(n.nodeInfoVisited); err == nil {
 		if err := ioutil.WriteFile("nodeinfo.json", j, 0644); err != nil {
 			fmt.Println("Failed to write nodeinfo.json:", err)
 		}
 	}
+
+	fmt.Println(attempted, "nodes were processed")
+	fmt.Println(found, "nodes were found")
+	fmt.Println(attempted-found, "nodes were not found")
+	fmt.Println()
+	fmt.Println(n.nodeInfoVisited.Meta.NodesSuccessful, "nodes responded with nodeinfo")
+	fmt.Println(n.nodeInfoVisited.Meta.NodesFailed, "nodes did not respond with nodeinfo")
 }
 
 func (n *node) dhtPing(pubkey crypto.BoxPubKey, coords []uint64) {
