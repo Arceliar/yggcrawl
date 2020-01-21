@@ -2,8 +2,12 @@ package main
 
 import (
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io/ioutil"
+	"math/rand"
 	"os"
+	"reflect"
 	"sync"
 	"time"
 
@@ -14,24 +18,27 @@ import (
 )
 
 type node struct {
-	core   yggdrasil.Core
-	config *config.NodeConfig
-	log    *log.Logger
-
-	dhtGroup   sync.WaitGroup
-	dhtVisited map[crypto.BoxPubKey]attempt
-	dhtMutex   sync.RWMutex
-
-	niGroup   sync.WaitGroup
-	niVisited map[crypto.BoxPubKey]interface{}
-	niMutex   sync.RWMutex
+	core              yggdrasil.Core
+	config            *config.NodeConfig
+	log               *log.Logger
+	dhtWaitGroup      sync.WaitGroup
+	dhtVisited        map[crypto.BoxPubKey]attempt
+	dhtMutex          sync.RWMutex
+	nodeInfoWaitGroup sync.WaitGroup
+	nodeInfoVisited   struct {
+		Meta struct {
+			GeneratedAt     int
+			NodesSuccessful uint8
+			NodesFailed     uint8
+		} `json:"meta"`
+		NodeInfo map[string]interface{} `json:"nodeinfo"`
+	}
+	nodeInfoMutex sync.RWMutex
 }
 
 type attempt struct {
-	attempts uint8    // how many times have we tried to search for this node?
-	coords   []uint64 // the coordinates of the node
-	found    bool     // has a search for this node completed successfully?
-	active   bool     // is a search taking place right now?
+	coords []uint64 // the coordinates of the node
+	found  bool     // has a search for this node completed successfully?
 }
 
 func main() {
@@ -39,7 +46,9 @@ func main() {
 		config:     config.GenerateConfig(),
 		log:        log.New(os.Stdout, "", log.Flags()),
 		dhtVisited: make(map[crypto.BoxPubKey]attempt),
-		niVisited:  make(map[crypto.BoxPubKey]interface{}),
+		nodeInfoVisited: nodeinfos{
+			NodeInfo: make(map[string]interface{}),
+		},
 	}
 
 	n.config.NodeInfo = map[string]interface{}{
@@ -70,22 +79,21 @@ func main() {
 	var pubkey crypto.BoxPubKey
 	if key, err := hex.DecodeString(n.core.EncryptionPublicKey()); err == nil {
 		copy(pubkey[:], key)
-		go n.dhtPing(pubkey, n.core.Coords(), 0)
+		go n.dhtPing(pubkey, n.core.Coords())
 	} else {
 		panic("failed to decode pub key")
 	}
 
 	time.Sleep(time.Second)
 
-	n.dhtGroup.Wait()
-	n.niGroup.Wait()
+	n.dhtWaitGroup.Wait()
+	n.nodeInfoWaitGroup.Wait()
 
 	n.dhtMutex.Lock()
-	n.niMutex.Lock()
+	n.nodeInfoMutex.Lock()
 
 	fmt.Println()
-	fmt.Println("DHT ping workers have finished")
-	fmt.Println("The crawl took", time.Since(starttime), "seconds")
+	fmt.Println("The crawl took", time.Since(starttime))
 
 	attempted := len(n.dhtVisited)
 	found := 0
@@ -95,24 +103,32 @@ func main() {
 		}
 	}
 
+	n.nodeInfoVisited.Meta.GeneratedAt = time.Now()
+	n.nodeInfoVisited.Meta.NodesSuccessful = len(n.nodeInfoVisited.NodeInfo)
+	n.nodeInfoVisited.Meta.NodesFailed = found - len(n.nodeInfoVisited.NodeInfo)
+
+	fmt.Println()
 	fmt.Println(attempted, "nodes were processed")
 	fmt.Println(found, "nodes were found")
 	fmt.Println(attempted-found, "nodes were not found")
-	fmt.Println(len(n.niVisited), "nodes responded with nodeinfo")
-	fmt.Println(found-len(n.niVisited), "nodes did not respond with nodeinfo")
+	fmt.Println()
+	fmt.Println(n.nodeInfoVisited.Meta.NodesSuccessful, "nodes responded with nodeinfo")
+	fmt.Println(n.nodeInfoVisited.Meta.NodesFailed, "nodes did not respond with nodeinfo")
+	fmt.Println()
+
+	if j, err := json.Marshal(n.nodeInfoVisited); err == nil {
+		if err := ioutil.WriteFile("nodeinfo.json", j, 0644); err != nil {
+			fmt.Println("Failed to write nodeinfo.json:", err)
+		}
+	}
 }
 
-func (n *node) dhtPing(pubkey crypto.BoxPubKey, coords []uint64, delay uint8) {
-	n.dhtGroup.Add(1)
-	defer n.dhtGroup.Done()
-	defer fmt.Printf(".")
-
-	if delay > 0 {
-		time.Sleep(time.Duration(delay) * time.Second)
-	}
+func (n *node) dhtPing(pubkey crypto.BoxPubKey, coords []uint64) {
+	n.dhtWaitGroup.Add(1)
+	defer n.dhtWaitGroup.Done()
 
 	n.dhtMutex.RLock()
-	if info, ok := n.dhtVisited[pubkey]; ok && info.active {
+	if info, ok := n.dhtVisited[pubkey]; (ok && reflect.DeepEqual(coords, info.coords)) || info.found {
 		n.dhtMutex.RUnlock()
 		return
 	}
@@ -121,10 +137,11 @@ func (n *node) dhtPing(pubkey crypto.BoxPubKey, coords []uint64, delay uint8) {
 	n.dhtMutex.Lock()
 	n.dhtVisited[pubkey] = attempt{
 		coords: coords,
-		active: true,
+		found:  false,
 	}
 	n.dhtMutex.Unlock()
 
+	time.Sleep(time.Millisecond * time.Duration(rand.Intn(10000)))
 	res, err := n.core.DHTPing(
 		pubkey,
 		coords,
@@ -132,55 +149,53 @@ func (n *node) dhtPing(pubkey crypto.BoxPubKey, coords []uint64, delay uint8) {
 	)
 
 	n.dhtMutex.Lock()
-	attempt := n.dhtVisited[pubkey]
-	if err == nil {
-		attempt.found = true
-		n.dhtVisited[pubkey] = attempt
-		n.dhtMutex.Unlock()
+	n.dhtVisited[pubkey] = attempt{
+		coords: res.Coords,
+		found:  err == nil,
+	}
+	if n.dhtVisited[pubkey].found {
 		go n.nodeInfo(pubkey, coords)
 	} else {
-		attempt.attempts++
-		n.dhtVisited[pubkey] = attempt
 		n.dhtMutex.Unlock()
 		return
 	}
 
+	n.dhtMutex.Unlock()
 	n.dhtMutex.RLock()
+	defer time.Sleep(time.Second)
 	defer n.dhtMutex.RUnlock()
 
 	for _, info := range res.Infos {
-		attempt, ok := n.dhtVisited[info.PublicKey]
-		if !ok || !attempt.found {
-			go n.dhtPing(info.PublicKey, info.Coords, 0)
-		}
-	}
-
-	for pubkey, info := range n.dhtVisited {
-		if !info.found && !info.active && info.attempts < 5 {
-			go n.dhtPing(pubkey, info.coords, info.attempts)
-		}
+		go n.dhtPing(info.PublicKey, info.Coords)
 	}
 }
 
 func (n *node) nodeInfo(pubkey crypto.BoxPubKey, coords []uint64) {
-	n.niGroup.Add(1)
-	defer n.niGroup.Done()
-	defer fmt.Printf(":")
+	n.nodeInfoWaitGroup.Add(1)
+	defer n.nodeInfoWaitGroup.Done()
 
-	n.niMutex.RLock()
-	if _, ok := n.niVisited[pubkey]; ok {
-		n.niMutex.RUnlock()
+	nodeid := hex.EncodeToString(pubkey[:])
+
+	n.nodeInfoMutex.RLock()
+	if _, ok := n.nodeInfoVisited.NodeInfo[nodeid]; ok {
+		n.nodeInfoMutex.RUnlock()
 		return
 	}
-	n.niMutex.RUnlock()
+	n.nodeInfoMutex.RUnlock()
 
+	time.Sleep(time.Millisecond * time.Duration(rand.Intn(10000)))
 	res, err := n.core.GetNodeInfo(pubkey, coords, false)
 	if err != nil {
 		return
 	}
 
-	n.niMutex.Lock()
-	defer n.niMutex.Unlock()
+	n.nodeInfoMutex.Lock()
+	defer n.nodeInfoMutex.Unlock()
 
-	n.niVisited[pubkey] = res
+	var j interface{}
+	if err := json.Unmarshal(res, &j); err != nil {
+		fmt.Println(err)
+	} else {
+		n.nodeInfoVisited.NodeInfo[nodeid] = j
+	}
 }
