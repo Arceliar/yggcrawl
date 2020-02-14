@@ -160,11 +160,14 @@ func main() {
 	if j, err := json.MarshalIndent(res, "", "\t"); err == nil {
 		if err := ioutil.WriteFile(*defaultFilename, j, 0644); err != nil {
 			fmt.Printf("Failed to write %s: %v", *defaultFilename, err)
+		} else {
+			fmt.Println("Results written to", *defaultFilename)
 		}
 	} else {
 		fmt.Println("Failed to marshal results:", err)
 	}
 
+	fmt.Println()
 	fmt.Println(res.Meta.NodesAttempted, "nodes were processed")
 	fmt.Println(res.Meta.NodesSuccessful, "nodes were found")
 	fmt.Println(res.Meta.NodesFailed, "nodes were not found")
