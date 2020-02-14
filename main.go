@@ -36,8 +36,9 @@ import (
 	"github.com/yggdrasil-network/yggdrasil-go/src/yggdrasil"
 )
 
-var defaultPeer = flag.String("peer", "", "default peer to use, e.g. tcp://host:port")
+var defaultPeer = flag.String("peer", "", "static peer to use, e.g. tcp://host:port")
 var defaultFilename = flag.String("file", "results.json", "filename to write results to")
+var defaultAdminSocket = flag.String("admin", "none", "admin socket path, e.g. unix:///var/run/yggcrawl.sock")
 
 type node struct {
 	core              yggdrasil.Core
@@ -92,7 +93,7 @@ func main() {
 	n.config.NodeInfo = map[string]interface{}{
 		"name": "Yggdrasil Crawler",
 	}
-	n.config.AdminListen = "unix:///var/run/yggcrawl.sock"
+	n.config.AdminListen = *defaultAdminSocket
 	n.config.SessionFirewall.Enable = true
 	n.config.SessionFirewall.AllowFromDirect = false
 	n.config.SessionFirewall.AllowFromRemote = false
