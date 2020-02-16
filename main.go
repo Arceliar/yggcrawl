@@ -119,15 +119,14 @@ func main() {
 	fmt.Println("Our network coords are", n.core.Coords())
 	fmt.Println("Starting crawl")
 
-	var pubkey crypto.BoxPubKey
 	if key, err := hex.DecodeString(n.core.EncryptionPublicKey()); err == nil {
+		var pubkey crypto.BoxPubKey
 		copy(pubkey[:], key)
+		n.dhtWaitGroup.Add(1)
 		go n.dhtPing(pubkey, n.core.Coords())
 	} else {
 		panic("failed to decode pub key")
 	}
-
-	time.Sleep(time.Second)
 
 	n.dhtWaitGroup.Wait()
 	n.nodeInfoWaitGroup.Wait()
@@ -177,9 +176,8 @@ func main() {
 }
 
 func (n *node) dhtPing(pubkey crypto.BoxPubKey, coords []uint64) {
-	// Notify the main goroutine that we're working and to wait for us to complete
-	// before finishing the process
-	n.dhtWaitGroup.Add(1)
+	time.Sleep(time.Millisecond * time.Duration(rand.Intn(1000)))
+	// Notify the main goroutine that we're done working
 	defer n.dhtWaitGroup.Done()
 
 	// Generate useful information about the node, such as it's node ID, address
@@ -210,7 +208,6 @@ func (n *node) dhtPing(pubkey crypto.BoxPubKey, coords []uint64) {
 	n.dhtMutex.Unlock()
 
 	// Send out a DHT ping request into the network
-	time.Sleep(time.Millisecond * time.Duration(rand.Intn(10000)))
 	res, err := n.core.DHTPing(
 		pubkey,
 		coords,
@@ -236,6 +233,7 @@ func (n *node) dhtPing(pubkey crypto.BoxPubKey, coords []uint64) {
 	// If we successfully found the node then try to start another goroutine that
 	// will request nodeinfo for the node
 	if n.dhtVisited[key].Found {
+		n.nodeInfoWaitGroup.Add(1)
 		go n.nodeInfo(pubkey, coords)
 	} else {
 		n.dhtMutex.Unlock()
@@ -245,20 +243,19 @@ func (n *node) dhtPing(pubkey crypto.BoxPubKey, coords []uint64) {
 	// Clean up a bit
 	n.dhtMutex.Unlock()
 	n.dhtMutex.RLock()
-	defer time.Sleep(time.Second)
 	defer n.dhtMutex.RUnlock()
 
 	// Start new DHT search goroutines based on the rumours included in the DHT
 	// ping response
 	for _, info := range res.Infos {
+		n.dhtWaitGroup.Add(1)
 		go n.dhtPing(info.PublicKey, info.Coords)
 	}
 }
 
 func (n *node) nodeInfo(pubkey crypto.BoxPubKey, coords []uint64) {
-	// Notify the main goroutine that we're working and to wait for us to complete
-	// before finishing the process
-	n.nodeInfoWaitGroup.Add(1)
+	time.Sleep(time.Millisecond * time.Duration(rand.Intn(1000)))
+	// Notify the main goroutine that we're done working
 	defer n.nodeInfoWaitGroup.Done()
 
 	// Store information that says that we attempted to query this node for
@@ -271,9 +268,7 @@ func (n *node) nodeInfo(pubkey crypto.BoxPubKey, coords []uint64) {
 	}
 	n.nodeInfoMutex.RUnlock()
 
-	// Wait for a random amount of time (to reduce load) and then send the
-	// nodeinfo request to the given coordinates
-	time.Sleep(time.Millisecond * time.Duration(rand.Intn(10000)))
+	// send the nodeinfo request to the given coordinates
 	res, err := n.core.GetNodeInfo(pubkey, coords, false)
 	if err != nil {
 		return
